@@ -36,21 +36,30 @@ def send_server3_notification(title, message):
     else:
         logger.debug("ServerChan3 send key not exists.")
 
+
 def send_telegram_notification(msg: str):
-    token = os.getenv("TG_BOT_TOKEN")
-    chat_id = os.getenv("TG_CHAT_ID")
-    if not token or not chat_id:
-        return
-    try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": msg,
-                "parse_mode": "Markdown",
-            }
-        ).json()
-        if not resp.get("ok"):
-            logger.error(f"Telegram 推送失败: {resp}")
-    except Exception as e:
-        logger.error(f"Telegram 推送异常: {e}")
+    token = os.getenv("TG_BOT_TOKEN")
+    chat_id = os.getenv("TG_CHAT_ID")
+    if not token or not chat_id:
+        logger.error("Telegram Bot Token 或 Chat ID 未配置")
+        return
+    try:
+        if not msg.strip():
+            logger.error("消息内容为空")
+            return
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }
+        resp = requests.post(url, json=data)
+        resp.raise_for_status()
+        resp_json = resp.json()
+        if not resp_json.get("ok"):
+            logger.error(f"Telegram 推送失败: {resp_json.get('description')}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Telegram 推送异常: 网络请求错误 - {e}")
+    except Exception as e:
+        logger.error(f"Telegram 推送异常: {e}")
