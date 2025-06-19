@@ -37,24 +37,25 @@ def send_server3_notification(title, message):
         logger.debug("ServerChan3 send key not exists.")
 
 
-def send_telegram_notification(title: str, message: str):
+def send_telegram_notification(msg: str):
     token = os.getenv("TG_BOT_TOKEN")
     chat_id = os.getenv("TG_CHAT_ID")
-    if not token or not chat_id:
-        logger.debug("Telegram token or chat_id not configured.")
+
+    if not token or not chat_id or not msg.strip():
         return
 
-    full_message = f"*{title}*\n{message}"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": msg,
+        # "parse_mode": "Markdown"  # 可选，如果你不确定格式就先注释掉
+    }
+
     try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": full_message,
-                "parse_mode": "Markdown"
-            },
-            timeout=5
-        )
-        logger.debug(f"Telegram 推送返回: {resp.status_code} - {resp.text}")
+        resp = requests.post(url, data=data, timeout=5) 
+        if not resp.ok:
+            print(f"Telegram 推送失败: {resp.status_code}, {resp.text}")
+        else:
+            print("✅ Telegram 推送成功！")
     except Exception as e:
-        logger.error(f"Telegram 推送异常: {e}")
+        print(f"Telegram 推送异常: {e}")
