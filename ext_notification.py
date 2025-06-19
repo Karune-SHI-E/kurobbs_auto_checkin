@@ -9,6 +9,7 @@ def send_notification(message):
     title = "库街区自动签到任务"
     send_bark_notification(title, message)
     send_server3_notification(title, message)
+    send_telegram_notification(f"{title}\n{message}")
 
 
 def send_bark_notification(title, message):
@@ -41,21 +42,22 @@ def send_telegram_notification(msg: str):
     token = os.getenv("TG_BOT_TOKEN")
     chat_id = os.getenv("TG_CHAT_ID")
 
-    if not token or not chat_id or not msg.strip():
+    # 添加环境变量检查日志
+    if not token or not chat_id:
+        logger.error("Telegram推送失败：缺少环境变量 TG_BOT_TOKEN 或 TG_CHAT_ID")
+        return
+    if not msg.strip():
+        logger.error("Telegram推送失败：消息内容为空")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": msg,
-        # "parse_mode": "Markdown"  # 可选，如果你不确定格式就先注释掉
-    }
-
+    data = {"chat_id": chat_id, "text": msg}
+    
     try:
-        resp = requests.post(url, data=data, timeout=5) 
-        if not resp.ok:
-            print(f"Telegram 推送失败: {resp.status_code}, {resp.text}")
+        resp = requests.post(url, data=data, timeout=5)
+        if resp.status_code != 200:
+            logger.error(f"Telegram推送失败: {resp.status_code}, {resp.text}")
         else:
-            print("✅ Telegram 推送成功！")
+            logger.success("Telegram推送成功")
     except Exception as e:
-        print(f"Telegram 推送异常: {e}")
+        logger.error(f"Telegram请求异常: {e}")
