@@ -1,24 +1,15 @@
-name: Random Daily Visit
+name: Daily Visit
 
 on:
   schedule:
-    # 每天在随机小时和随机分钟运行
-    - cron: '*/60 * * * *'  # 每小时的第0分钟运行一次
+    # 每天北京时间 00:00 运行（可以根据需要调整时间）
+    - cron: '0 16 * * *'  # UTC 时间，北京时间是 UTC+8，所以这里设置为 16:00 UTC 对应北京时间 00:00
 
 jobs:
   visit-website:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for random minutes
-        id: wait
-        run: |
-          # 生成0-59分钟之间的随机数
-          random_minutes=$(($RANDOM % 60))
-          echo "random_minutes=$random_minutes" >> $GITHUB_OUTPUT
-
       - name: Visit Website
         run: |
-          # 等待随机分钟数
-          sleep ${{ steps.wait.outputs.random_minutes }}m
           # 使用curl访问网站
           curl -s -o /dev/null -w "Visit time: %{time_total}s, HTTP status: %{http_code}\n" https://downloads.khinsider.com/?u=2980544
