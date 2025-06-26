@@ -1,6 +1,7 @@
 name: Daily Visit
 
 on:
+  workflow_dispatch:  
   schedule:
     # 每天北京时间 00:00 运行（可以根据需要调整时间）
     - cron: '0 16 * * *'  # UTC 时间，北京时间是 UTC+8，所以这里设置为 16:00 UTC 对应北京时间 00:00
