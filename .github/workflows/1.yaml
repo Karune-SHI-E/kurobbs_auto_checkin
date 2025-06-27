@@ -1,4 +1,4 @@
-name: Compile FFmpeg for Termux
+name: Compile Full FFmpeg for Termux
 
 on:
   push:
@@ -7,10 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  build-ffmpeg:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Android NDK
@@ -18,57 +19,136 @@ jobs:
         with:
           ndk-version: r25c
 
-      - name: Install dependencies
+      - name: Install build tools
         run: |
           sudo apt update
-          sudo apt install -y git autoconf automake libtool pkg-config nasm yasm
+          sudo apt install -y build-essential cmake git pkg-config \
+            autoconf automake libtool nasm yasm texinfo zlib1g-dev libpng-dev
 
-      - name: Download FFmpeg source code
+      - name: Set environment variables
         run: |
-          wget -O ffmpeg.tar.bz2 https://www.ffmpeg.org/releases/ffmpeg-7.1.1.tar.bz2
-          tar -xjf ffmpeg.tar.bz2
+          echo "export ANDROID_NDK=$ANDROID_NDK" >> $GITHUB_ENV
+          echo "export HOST_TAG=linux-x86_64" >> $GITHUB_ENV
+          echo "export TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+          echo "export TARGET=aarch64-linux-android" >> $GITHUB_ENV
+          echo "export API=21" >> $GITHUB_ENV
+          echo "export PREFIX=$HOME/ffmpeg-build" >> $GITHUB_ENV
+          echo "export PATH=$TOOLCHAIN/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Build dependencies (libx264, fdk-aac, etc.)
+        run: |
+          mkdir -p $HOME/deps && cd $HOME/deps
+
+          # Helper function to export toolchain env
+          setup_env() {
+            export AR=$TOOLCHAIN/bin/llvm-ar
+            export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
+            export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
+            export LD=$TOOLCHAIN/bin/ld
+            export STRIP=$TOOLCHAIN/bin/llvm-strip
+          }
+
+          setup_env
+
+          build_fdk_aac() {
+            git clone --depth=1 https://github.com/mstorsjo/fdk-aac
+            cd fdk-aac
+            autoreconf -fiv
+            ./configure --host=$TARGET --prefix=$PREFIX --enable-static --disable-shared
+            make -j$(nproc)
+            make install
+            cd ..
+          }
+
+          build_x264() {
+            git clone --depth=1 https://code.videolan.org/videolan/x264.git
+            cd x264
+            ./configure --cross-prefix=$TOOLCHAIN/bin/${TARGET}- \
+                        --host=$TARGET \
+                        --enable-static --disable-opencl \
+                        --prefix=$PREFIX \
+                        --sysroot=$TOOLCHAIN/sysroot \
+                        --extra-cflags="-fPIC"
+            make -j$(nproc)
+            make install
+            cd ..
+          }
+
+          build_libmp3lame() {
+            wget https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+            tar xzf lame-3.100.tar.gz
+            cd lame-3.100
+            ./configure --host=$TARGET --disable-shared --enable-static --prefix=$PREFIX
+            make -j$(nproc)
+            make install
+            cd ..
+          }
+
+          build_libopus() {
+            git clone --depth=1 https://github.com/xiph/opus.git
+            cd opus
+            ./autogen.sh
+            ./configure --host=$TARGET --disable-shared --enable-static --prefix=$PREFIX
+            make -j$(nproc)
+            make install
+            cd ..
+          }
+
+          # You can extend this block for x265, libvpx, libass, etc.
+
+          build_fdk_aac
+          build_x264
+          build_libmp3lame
+          build_libopus
+
+      - name: Download FFmpeg
+        run: |
+          wget https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.bz2
+          tar xjf ffmpeg-7.1.1.tar.bz2
           mv ffmpeg-7.1.1 ffmpeg
 
-      - name: Build libfdk-aac for Termux
-        run: |
-          git clone https://github.com/mstorsjo/fdk-aac.git
-          cd fdk-aac
-          ./autogen.sh
-          ./configure --host=aarch64-linux-android --prefix=$HOME/libfdk-aac-android
-          make -j$(nproc)
-          make install
-
-      - name: Build FFmpeg for Termux
+      - name: Build FFmpeg
         run: |
           cd ffmpeg
-          export PATH="$PATH:$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export SYSROOT="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          export CC="aarch64-linux-android-clang"
-          export CXX="aarch64-linux-android-clang++"
-          export AR="llvm-ar"
-          export NM="llvm-nm"
-          export STRIP="llvm-strip"
+
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          export CC=$TOOLCHAIN/bin/${TARGET}21-clang
+          export CXX=$TOOLCHAIN/bin/${TARGET}21-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export LD=$TOOLCHAIN/bin/ld
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
 
           ./configure \
-            --prefix=$HOME/ffmpeg-android \
-            --arch=aarch64 \
+            --prefix=$PREFIX \
             --target-os=android \
-            --cross-prefix=aarch64-linux-android- \
-            --sysroot=$SYSROOT \
+            --arch=aarch64 \
+            --cpu=armv8-a \
+            --cross-prefix=$TOOLCHAIN/bin/${TARGET}- \
             --enable-cross-compile \
+            --sysroot=$TOOLCHAIN/sysroot \
+            --cc=$CC \
+            --cxx=$CXX \
+            --ar=$AR \
+            --strip=$STRIP \
+            --pkg-config=pkg-config \
             --enable-gpl \
-            --enable-libass \
-            --enable-libfreetype \
-            --enable-libfribidi \
-            --enable-libmp3lame \
-            --enable-libopus \
-            --enable-libtheora \
-            --enable-libvorbis \
-            --enable-libvpx \
+            --enable-version3 \
+            --enable-nonfree \
             --enable-libx264 \
-            --enable-libx265 \
+            --enable-libmp3lame \
             --enable-libfdk-aac \
-            --enable-nonfree
+            --enable-libopus \
+            --disable-static \
+            --enable-shared \
+            --extra-cflags="-I$PREFIX/include" \
+            --extra-ldflags="-L$PREFIX/lib"
 
           make -j$(nproc)
           make install
+
+      - name: Upload FFmpeg Android Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-android
+          path: $HOME/ffmpeg-build
