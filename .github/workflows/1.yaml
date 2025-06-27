@@ -1,0 +1,61 @@
+name: Compile FFmpeg for Termux
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Android NDK
+        uses: tzw2016/setup-android-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git autoconf automake libtool pkg-config nasm yasm
+
+      - name: Build libfdk-aac for Termux
+        run: |
+          git clone https://github.com/mstorsjo/fdk-aac.git
+          cd fdk-aac
+          ./autogen.sh
+          ./configure --host=aarch64-linux-android --prefix=$HOME/libfdk-aac-android
+          make -j$(nproc)
+          make install
+
+      - name: Build FFmpeg for Termux
+        run: |
+          git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
+          cd ffmpeg
+          ./configure \
+            --arch=aarch64 \
+            --target-os=android \
+            --cross-prefix=aarch64-linux-android- \
+            --sysroot=$ANDROID_NDK/sysroot \
+            --prefix=$HOME/ffmpeg-android \
+            --enable-cross-compile \
+            --enable-gpl \
+            --enable-libass \
+            --enable-libfreetype \
+            --enable-libfribidi \
+            --enable-libmp3lame \
+            --enable-libopus \
+            --enable-libtheora \
+            --enable-libvorbis \
+            --enable-libvpx \
+            --enable-libx264 \
+            --enable-libx265 \
+            --enable-libfdk-aac \
+            --enable-nonfree
+          make -j$(nproc)
+          make install
