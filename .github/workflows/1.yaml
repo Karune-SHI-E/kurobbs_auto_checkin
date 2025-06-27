@@ -1,7 +1,6 @@
 name: Compile FFmpeg for Termux
 
 on:
-  workflow_dispatch:  # 手动触发
   push:
     branches: [main]
   pull_request:
@@ -15,7 +14,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@1v
         with:
           ndk-version: r25c
 
@@ -23,6 +22,12 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y git autoconf automake libtool pkg-config nasm yasm
+
+      - name: Download FFmpeg source code
+        run: |
+          wget -O ffmpeg.tar.bz2 https://www.ffmpeg.org/releases/ffmpeg-7.1.1.tar.bz2
+          tar -xjf ffmpeg.tar.bz2
+          mv ffmpeg-7.1.1 ffmpeg
 
       - name: Build libfdk-aac for Termux
         run: |
@@ -35,14 +40,21 @@ jobs:
 
       - name: Build FFmpeg for Termux
         run: |
-          git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
           cd ffmpeg
+          export PATH="$PATH:$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export SYSROOT="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          export CC="aarch64-linux-android-clang"
+          export CXX="aarch64-linux-android-clang++"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export STRIP="llvm-strip"
+
           ./configure \
+            --prefix=$HOME/ffmpeg-android \
             --arch=aarch64 \
             --target-os=android \
             --cross-prefix=aarch64-linux-android- \
-            --sysroot=$ANDROID_NDK/sysroot \
-            --prefix=$HOME/ffmpeg-android \
+            --sysroot=$SYSROOT \
             --enable-cross-compile \
             --enable-gpl \
             --enable-libass \
@@ -57,5 +69,6 @@ jobs:
             --enable-libx265 \
             --enable-libfdk-aac \
             --enable-nonfree
+
           make -j$(nproc)
           make install
