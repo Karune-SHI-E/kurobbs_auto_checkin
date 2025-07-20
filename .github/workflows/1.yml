@@ -10,32 +10,40 @@ jobs:
     runs-on: ubuntu-latest
     name: Build Transmission for aarch64
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config automake libtool \
-            libssl-dev libcurl4-openssl-dev intltool libevent-dev \
-            cmake ninja-build
+            libssl-dev libcurl4-openssl-dev intltool libevent-dev ninja-build cmake
 
-      - name: Download Transmission source
+      - name: Download Transmission 4.0.6 source
         run: |
           wget https://github.com/transmission/transmission/releases/download/4.0.6/transmission-4.0.6.tar.xz
           tar -xf transmission-4.0.6.tar.xz
           mv transmission-4.0.6 transmission
           cd transmission
+
+      - name: Build transmission (disable miniupnpc)
+        run: |
+          cd transmission
           mkdir build && cd build
-          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DENABLE_UPNP=OFF \
+            -DENABLE_NATPMP=OFF \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
           ninja
 
       - name: Package binaries
         run: |
           cd transmission/build
-          tar -czvf transmission-4.0.6-aarch64.tar.gz transmission-daemon transmission-cli
+          tar -czvf transmission-4.0.6-aarch64.tar.gz transmission-daemon transmission-cli transmission-remote transmission-create
 
-      - name: Upload artifacts
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: transmission-4.0.6-aarch64
