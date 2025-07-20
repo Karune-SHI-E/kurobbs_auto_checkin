@@ -1,0 +1,42 @@
+name: Build Transmission 4.0.6 ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build Transmission for aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential pkg-config automake libtool \
+            libssl-dev libcurl4-openssl-dev intltool libevent-dev \
+            cmake ninja-build
+
+      - name: Download Transmission source
+        run: |
+          wget https://github.com/transmission/transmission/releases/download/4.0.6/transmission-4.0.6.tar.xz
+          tar -xf transmission-4.0.6.tar.xz
+          mv transmission-4.0.6 transmission
+          cd transmission
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja
+
+      - name: Package binaries
+        run: |
+          cd transmission/build
+          tar -czvf transmission-4.0.6-aarch64.tar.gz transmission-daemon transmission-cli
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: transmission-4.0.6-aarch64
+          path: transmission/build/transmission-4.0.6-aarch64.tar.gz
