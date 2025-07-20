@@ -16,7 +16,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config automake libtool \
-            libssl-dev libcurl4-openssl-dev intltool libevent-dev ninja-build cmake
+            libssl-dev libcurl4-openssl-dev intltool libevent-dev ninja-build \
+            cmake zlib1g-dev
 
       - name: Download Transmission source
         run: |
@@ -24,7 +25,7 @@ jobs:
           tar -xf transmission-4.0.6.tar.xz
           mv transmission-4.0.6 transmission
 
-      - name: Build transmission with UPnP disabled
+      - name: Build Transmission with UPnP and miniupnpc disabled
         run: |
           cd transmission
           mkdir build && cd build
@@ -32,8 +33,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DENABLE_UPNP=OFF \
             -DENABLE_NATPMP=OFF \
+            -DENABLE_MINIUPNPC=OFF \
             -DENABLE_GTK=OFF \
             -DENABLE_GTK3=OFF \
+            -DENABLE_NLS=OFF \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
           ninja
@@ -41,7 +44,11 @@ jobs:
       - name: Package binaries
         run: |
           cd transmission/build
-          tar -czvf transmission-4.0.6-aarch64.tar.gz transmission-daemon transmission-cli transmission-remote transmission-create
+          tar -czvf transmission-4.0.6-aarch64.tar.gz \
+            transmission-daemon \
+            transmission-cli \
+            transmission-remote \
+            transmission-create
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
