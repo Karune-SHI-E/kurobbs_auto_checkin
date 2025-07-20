@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Build Transmission for aarch64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,14 +18,13 @@ jobs:
           sudo apt install -y build-essential pkg-config automake libtool \
             libssl-dev libcurl4-openssl-dev intltool libevent-dev ninja-build cmake
 
-      - name: Download Transmission 4.0.6 source
+      - name: Download Transmission source
         run: |
           wget https://github.com/transmission/transmission/releases/download/4.0.6/transmission-4.0.6.tar.xz
           tar -xf transmission-4.0.6.tar.xz
           mv transmission-4.0.6 transmission
-          cd transmission
 
-      - name: Build transmission (disable miniupnpc)
+      - name: Build transmission with UPnP disabled
         run: |
           cd transmission
           mkdir build && cd build
@@ -34,6 +32,8 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DENABLE_UPNP=OFF \
             -DENABLE_NATPMP=OFF \
+            -DENABLE_GTK=OFF \
+            -DENABLE_GTK3=OFF \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
           ninja
