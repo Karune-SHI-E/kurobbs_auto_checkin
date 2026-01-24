@@ -1,180 +1,64 @@
 import os
-import sys
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 from loguru import logger
-from pydantic import BaseModel, Field
-
-from ext_notification import send_notification
+from serverchan_sdk import sc_send
 
 
-# =======================
-# 数据模型
-# =======================
-
-class Response(BaseModel):
-    code: int = Field(..., alias="code")
-    msg: str = Field(..., alias="msg")
-    success: Optional[bool] = Field(None, alias="success")
-    data: Optional[Any] = Field(None, alias="data")
+def send_notification(message):
+    title = "库街区自动签到任务"
+    send_bark_notification(title, message)
+    send_server3_notification(title, message)
+    send_telegram_notification(f"{title}\n{message}")
 
 
-# =======================
-# 异常
-# =======================
+def send_bark_notification(title, message):
+    """Send a notification via Bark."""
+    bark_device_key = os.getenv("BARK_DEVICE_KEY")
+    bark_server_url = os.getenv("BARK_SERVER_URL")
 
-class KurobbsClientException(Exception):
-    pass
+    if not bark_device_key or not bark_server_url:
+        logger.debug("Bark secrets are not set. Skipping notification.")
+        return
 
-
-# =======================
-# 客户端
-# =======================
-
-class KurobbsClient:
-    FIND_ROLE_LIST_API_URL = "https://api.kurobbs.com/user/role/findRoleList"
-    SIGN_URL = "https://api.kurobbs.com/encourage/signIn/v2"
-    USER_SIGN_URL = "https://api.kurobbs.com/user/signIn"
-
-    def __init__(self, token: str, name: str = ""):
-        self.token = token
-        self.name = name
-        self.result: Dict[str, str] = {}
-        self.exceptions: List[str] = []
-
-    def get_headers(self) -> Dict[str, str]:
-        return {
-            "osversion": "Android",
-            "devcode": "2fba3859fe9bfe9099f2696b8648c2c6",
-            "countrycode": "CN",
-            "model": "2211133C",
-            "source": "android",
-            "lang": "zh-Hans",
-            "version": "1.0.9",
-            "versioncode": "1090",
-            "token": self.token,
-            "content-type": "application/x-www-form-urlencoded; charset=utf-8",
-            "user-agent": "okhttp/3.10.0",
-        }
-
-    def make_request(self, url: str, data: Dict[str, Any]) -> Response:
-        resp = requests.post(url, headers=self.get_headers(), data=data, timeout=10)
-        return Response.model_validate_json(resp.content)
-
-    def get_user_game_list(self, game_id: int):
-        res = self.make_request(self.FIND_ROLE_LIST_API_URL, {"gameId": game_id})
-        if not res.data:
-            raise KurobbsClientException("未获取到角色信息")
-        return res.data
-
-    def checkin(self) -> Response:
-        game_list = self.get_user_game_list(3)
-
-        beijing_time = datetime.now(ZoneInfo("Asia/Shanghai"))
-        data = {
-            "gameId": game_list[0].get("gameId", 2),
-            "serverId": game_list[0].get("serverId"),
-            "roleId": game_list[0].get("roleId"),
-            "userId": game_list[0].get("userId"),
-            "reqMonth": f"{beijing_time.month:02d}",
-        }
-        return self.make_request(self.SIGN_URL, data)
-
-    def sign_in(self) -> Response:
-        return self.make_request(self.USER_SIGN_URL, {"gameId": 2})
-
-    def _handle_action(self, name: str, func: Callable[[], Response], ok: str, fail: str):
-        try:
-            res = func()
-            if res.success:
-                self.result[name] = ok
-            else:
-                self.exceptions.append(f"{fail}：{res.msg}")
-        except Exception as e:
-            self.exceptions.append(f"{fail}：{e}")
-
-    def start(self):
-        self._handle_action("checkin", self.checkin, "签到奖励成功", "签到奖励失败")
-        self._handle_action("sign", self.sign_in, "社区签到成功", "社区签到失败")
-
-    @property
-    def summary(self) -> str:
-        prefix = f"{self.name}：" if self.name else ""
-        if self.exceptions:
-            return prefix + "；".join(self.exceptions)
-        return prefix + "，".join(self.result.values())
+    # 构造 Bark API URL
+    url = f"{bark_server_url}/{bark_device_key}/{title}/{message}"
+    try:
+        requests.get(url)
+    except Exception:
+        pass
 
 
-# =======================
-# 日志
-# =======================
+def send_server3_notification(title, message):
+    server3_send_key = os.getenv("SERVER3_SEND_KEY")
+    if server3_send_key:
+        response = sc_send(server3_send_key, title, message, {"tags": "Github Action|库街区"})
+        logger.debug(response)
+    else:
+        logger.debug("ServerChan3 send key not exists.")
 
-def configure_logger(debug=False):
-    logger.remove()
-    logger.add(sys.stdout, level="DEBUG" if debug else "INFO")
 
+def send_telegram_notification(msg: str):
+    token = os.getenv("TG_BOT_TOKEN")
+    chat_id = os.getenv("TG_CHAT_ID")
 
-# =======================
-# Token 解析
-# =======================
+    # 添加环境变量检查日志
+    if not token or not chat_id:
+        logger.error("Telegram推送失败：缺少环境变量 TG_BOT_TOKEN 或 TG_CHAT_ID")
+        return
+    if not msg.strip():
+        logger.error("Telegram推送失败：消息内容为空")
+        return
 
-def parse_tokens(raw: str):
-    """
-    TOKEN=昵称:token,token,昵称2:token
-    """
-    result = []
-    for idx, item in enumerate(raw.split(","), start=1):
-        item = item.strip()
-        if not item:
-            continue
-        if ":" in item:
-            name, token = item.split(":", 1)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat_id, "text": msg}
+    
+    try:
+        resp = requests.post(url, data=data, timeout=5)
+        if resp.status_code != 200:
+            logger.error(f"Telegram推送失败: {resp.status_code}, {resp.text}")
         else:
-            name, token = f"账号{idx}", item
-        result.append((name.strip(), token.strip()))
-    return result
-
-
-# =======================
-# 主入口
-# =======================
-
-def main():
-    raw_tokens = os.getenv("TOKEN")
-    debug = os.getenv("DEBUG", False)
-
-    configure_logger(debug)
-
-    if not raw_tokens:
-        logger.error("未设置 TOKEN")
-        sys.exit(1)
-
-    accounts = parse_tokens(raw_tokens)
-
-    all_msgs = []
-    has_error = False
-
-    for idx, (name, token) in enumerate(accounts, start=1):
-        logger.info(f"▶ 处理 {name}")
-        try:
-            client = KurobbsClient(token, name)
-            client.start()
-            all_msgs.append(client.summary)
-            if "失败" in client.summary:
-                has_error = True
-        except Exception as e:
-            has_error = True
-            all_msgs.append(f"{name}：异常 {e}")
-
-    final_msg = "\n".join(all_msgs)
-    send_notification(final_msg)
-
-    if has_error:
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+            logger.success("Telegram推送成功")
+    except Exception as e:
+        logger.error(f"Telegram请求异常: {e}")
+        
