@@ -1,63 +1,178 @@
 import os
+import sys
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from loguru import logger
-from serverchan_sdk import sc_send
+from pydantic import BaseModel, Field
+
+from ext_notification import send_notification
 
 
-def send_notification(message):
-    title = "库街区自动签到任务"
-    send_bark_notification(title, message)
-    send_server3_notification(title, message)
-    send_telegram_notification(f"{title}\n{message}")
+# =======================
+# 数据模型
+# =======================
+
+class Response(BaseModel):
+    code: int = Field(..., alias="code")
+    msg: str = Field(..., alias="msg")
+    success: Optional[bool] = Field(None, alias="success")
+    data: Optional[Any] = Field(None, alias="data")
 
 
-def send_bark_notification(title, message):
-    """Send a notification via Bark."""
-    bark_device_key = os.getenv("BARK_DEVICE_KEY")
-    bark_server_url = os.getenv("BARK_SERVER_URL")
+# =======================
+# 自定义异常
+# =======================
 
-    if not bark_device_key or not bark_server_url:
-        logger.debug("Bark secrets are not set. Skipping notification.")
-        return
-
-    # 构造 Bark API URL
-    url = f"{bark_server_url}/{bark_device_key}/{title}/{message}"
-    try:
-        requests.get(url)
-    except Exception:
-        pass
+class KurobbsClientException(Exception):
+    pass
 
 
-def send_server3_notification(title, message):
-    server3_send_key = os.getenv("SERVER3_SEND_KEY")
-    if server3_send_key:
-        response = sc_send(server3_send_key, title, message, {"tags": "Github Action|库街区"})
-        logger.debug(response)
-    else:
-        logger.debug("ServerChan3 send key not exists.")
+# =======================
+# 客户端
+# =======================
 
+class KurobbsClient:
+    FIND_ROLE_LIST_API_URL = "https://api.kurobbs.com/user/role/findRoleList"
+    SIGN_URL = "https://api.kurobbs.com/encourage/signIn/v2"
+    USER_SIGN_URL = "https://api.kurobbs.com/user/signIn"
 
-def send_telegram_notification(msg: str):
-    token = os.getenv("TG_BOT_TOKEN")
-    chat_id = os.getenv("TG_CHAT_ID")
+    def __init__(self, token: str, name: str):
+        self.token = token
+        self.name = name
+        self.results: List[str] = []
+        self.errors: List[str] = []
 
-    # 添加环境变量检查日志
-    if not token or not chat_id:
-        logger.error("Telegram推送失败：缺少环境变量 TG_BOT_TOKEN 或 TG_CHAT_ID")
-        return
-    if not msg.strip():
-        logger.error("Telegram推送失败：消息内容为空")
-        return
+    def get_headers(self) -> Dict[str, str]:
+        return {
+            "osversion": "Android",
+            "devcode": "2fba3859fe9bfe9099f2696b8648c2c6",
+            "countrycode": "CN",
+            "model": "2211133C",
+            "source": "android",
+            "lang": "zh-Hans",
+            "version": "1.0.9",
+            "versioncode": "1090",
+            "token": self.token,
+            "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+            "user-agent": "okhttp/3.10.0",
+        }
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = {"chat_id": chat_id, "text": msg}
-    
-    try:
-        resp = requests.post(url, data=data, timeout=5)
-        if resp.status_code != 200:
-            logger.error(f"Telegram推送失败: {resp.status_code}, {resp.text}")
+    def request(self, url: str, data: Dict[str, Any]) -> Response:
+        resp = requests.post(url, headers=self.get_headers(), data=data, timeout=10)
+        return Response.model_validate_json(resp.content)
+
+    def get_user_game_list(self):
+        res = self.request(self.FIND_ROLE_LIST_API_URL, {"gameId": 3})
+        if not res.data:
+            raise KurobbsClientException("未获取到角色信息")
+        return res.data
+
+    def checkin_reward(self):
+        games = self.get_user_game_list()
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+
+        data = {
+            "gameId": games[0]["gameId"],
+            "serverId": games[0]["serverId"],
+            "roleId": games[0]["roleId"],
+            "userId": games[0]["userId"],
+            "reqMonth": f"{now.month:02d}",
+        }
+        res = self.request(self.SIGN_URL, data)
+        if res.success:
+            self.results.append("签到奖励成功")
         else:
-            logger.success("Telegram推送成功")
-    except Exception as e:
-        logger.error(f"Telegram请求异常: {e}")
+            self.errors.append(f"签到奖励失败：{res.msg}")
+
+    def sign_community(self):
+        res = self.request(self.USER_SIGN_URL, {"gameId": 2})
+        if res.success:
+            self.results.append("社区签到成功")
+        else:
+            self.errors.append(f"社区签到失败：{res.msg}")
+
+    def run(self):
+        try:
+            self.checkin_reward()
+        except Exception as e:
+            self.errors.append(str(e))
+
+        try:
+            self.sign_community()
+        except Exception as e:
+            self.errors.append(str(e))
+
+    @property
+    def summary(self) -> str:
+        prefix = f"{self.name}："
+        if self.errors:
+            return prefix + "；".join(self.errors)
+        return prefix + "，".join(self.results)
+
+
+# =======================
+# 工具函数
+# =======================
+
+def configure_logger():
+    logger.remove()
+    logger.add(sys.stdout, level="INFO")
+
+
+def parse_tokens(raw: str):
+    """
+    TOKEN=账号1:token1,账号2:token2,token3
+    """
+    accounts = []
+    for idx, item in enumerate(raw.split(","), start=1):
+        item = item.strip()
+        if not item:
+            continue
+
+        if ":" in item:
+            name, token = item.split(":", 1)
+        else:
+            name, token = f"账号{idx}", item
+
+        accounts.append((name.strip(), token.strip()))
+    return accounts
+
+
+# =======================
+# 主入口
+# =======================
+
+def main():
+    configure_logger()
+
+    raw_tokens = os.getenv("TOKEN")
+    if not raw_tokens:
+        logger.error("未设置 TOKEN")
+        sys.exit(1)
+
+    accounts = parse_tokens(raw_tokens)
+    logger.info(f"当前账号数：{len(accounts)}")
+
+    messages = []
+    has_error = False
+
+    for name, token in accounts:
+        logger.info(f"▶ 开始处理 {name}")
+        client = KurobbsClient(token, name)
+        client.run()
+        messages.append(client.summary)
+        if "失败" in client.summary:
+            has_error = True
+
+    final_msg = "\n".join(messages)
+    send_notification(final_msg)
+
+    if has_error:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
