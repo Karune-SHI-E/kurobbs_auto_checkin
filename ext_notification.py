@@ -23,7 +23,7 @@ class Response(BaseModel):
 
 
 # =======================
-# 自定义异常
+# 异常
 # =======================
 
 class KurobbsClientException(Exception):
@@ -39,11 +39,11 @@ class KurobbsClient:
     SIGN_URL = "https://api.kurobbs.com/encourage/signIn/v2"
     USER_SIGN_URL = "https://api.kurobbs.com/user/signIn"
 
-    def __init__(self, token: str, name: str):
+    def __init__(self, token: str, name: str = ""):
         self.token = token
         self.name = name
-        self.results: List[str] = []
-        self.errors: List[str] = []
+        self.result: Dict[str, str] = {}
+        self.exceptions: List[str] = []
 
     def get_headers(self) -> Dict[str, str]:
         return {
@@ -60,85 +60,82 @@ class KurobbsClient:
             "user-agent": "okhttp/3.10.0",
         }
 
-    def request(self, url: str, data: Dict[str, Any]) -> Response:
+    def make_request(self, url: str, data: Dict[str, Any]) -> Response:
         resp = requests.post(url, headers=self.get_headers(), data=data, timeout=10)
         return Response.model_validate_json(resp.content)
 
-    def get_user_game_list(self):
-        res = self.request(self.FIND_ROLE_LIST_API_URL, {"gameId": 3})
+    def get_user_game_list(self, game_id: int):
+        res = self.make_request(self.FIND_ROLE_LIST_API_URL, {"gameId": game_id})
         if not res.data:
             raise KurobbsClientException("未获取到角色信息")
         return res.data
 
-    def checkin_reward(self):
-        games = self.get_user_game_list()
-        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    def checkin(self) -> Response:
+        game_list = self.get_user_game_list(3)
 
+        beijing_time = datetime.now(ZoneInfo("Asia/Shanghai"))
         data = {
-            "gameId": games[0]["gameId"],
-            "serverId": games[0]["serverId"],
-            "roleId": games[0]["roleId"],
-            "userId": games[0]["userId"],
-            "reqMonth": f"{now.month:02d}",
+            "gameId": game_list[0].get("gameId", 2),
+            "serverId": game_list[0].get("serverId"),
+            "roleId": game_list[0].get("roleId"),
+            "userId": game_list[0].get("userId"),
+            "reqMonth": f"{beijing_time.month:02d}",
         }
-        res = self.request(self.SIGN_URL, data)
-        if res.success:
-            self.results.append("签到奖励成功")
-        else:
-            self.errors.append(f"签到奖励失败：{res.msg}")
+        return self.make_request(self.SIGN_URL, data)
 
-    def sign_community(self):
-        res = self.request(self.USER_SIGN_URL, {"gameId": 2})
-        if res.success:
-            self.results.append("社区签到成功")
-        else:
-            self.errors.append(f"社区签到失败：{res.msg}")
+    def sign_in(self) -> Response:
+        return self.make_request(self.USER_SIGN_URL, {"gameId": 2})
 
-    def run(self):
+    def _handle_action(self, name: str, func: Callable[[], Response], ok: str, fail: str):
         try:
-            self.checkin_reward()
+            res = func()
+            if res.success:
+                self.result[name] = ok
+            else:
+                self.exceptions.append(f"{fail}：{res.msg}")
         except Exception as e:
-            self.errors.append(str(e))
+            self.exceptions.append(f"{fail}：{e}")
 
-        try:
-            self.sign_community()
-        except Exception as e:
-            self.errors.append(str(e))
+    def start(self):
+        self._handle_action("checkin", self.checkin, "签到奖励成功", "签到奖励失败")
+        self._handle_action("sign", self.sign_in, "社区签到成功", "社区签到失败")
 
     @property
     def summary(self) -> str:
-        prefix = f"{self.name}："
-        if self.errors:
-            return prefix + "；".join(self.errors)
-        return prefix + "，".join(self.results)
+        prefix = f"{self.name}：" if self.name else ""
+        if self.exceptions:
+            return prefix + "；".join(self.exceptions)
+        return prefix + "，".join(self.result.values())
 
 
 # =======================
-# 工具函数
+# 日志
 # =======================
 
-def configure_logger():
+def configure_logger(debug=False):
     logger.remove()
-    logger.add(sys.stdout, level="INFO")
+    logger.add(sys.stdout, level="DEBUG" if debug else "INFO")
 
+
+# =======================
+# Token 解析
+# =======================
 
 def parse_tokens(raw: str):
     """
-    TOKEN=账号1:token1,账号2:token2,token3
+    TOKEN=昵称:token,token,昵称2:token
     """
-    accounts = []
+    result = []
     for idx, item in enumerate(raw.split(","), start=1):
         item = item.strip()
         if not item:
             continue
-
         if ":" in item:
             name, token = item.split(":", 1)
         else:
             name, token = f"账号{idx}", item
-
-        accounts.append((name.strip(), token.strip()))
-    return accounts
+        result.append((name.strip(), token.strip()))
+    return result
 
 
 # =======================
@@ -146,28 +143,33 @@ def parse_tokens(raw: str):
 # =======================
 
 def main():
-    configure_logger()
-
     raw_tokens = os.getenv("TOKEN")
+    debug = os.getenv("DEBUG", False)
+
+    configure_logger(debug)
+
     if not raw_tokens:
         logger.error("未设置 TOKEN")
         sys.exit(1)
 
     accounts = parse_tokens(raw_tokens)
-    logger.info(f"当前账号数：{len(accounts)}")
 
-    messages = []
+    all_msgs = []
     has_error = False
 
-    for name, token in accounts:
-        logger.info(f"▶ 开始处理 {name}")
-        client = KurobbsClient(token, name)
-        client.run()
-        messages.append(client.summary)
-        if "失败" in client.summary:
+    for idx, (name, token) in enumerate(accounts, start=1):
+        logger.info(f"▶ 处理 {name}")
+        try:
+            client = KurobbsClient(token, name)
+            client.start()
+            all_msgs.append(client.summary)
+            if "失败" in client.summary:
+                has_error = True
+        except Exception as e:
             has_error = True
+            all_msgs.append(f"{name}：异常 {e}")
 
-    final_msg = "\n".join(messages)
+    final_msg = "\n".join(all_msgs)
     send_notification(final_msg)
 
     if has_error:
