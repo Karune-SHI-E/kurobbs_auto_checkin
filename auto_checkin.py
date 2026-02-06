@@ -70,12 +70,16 @@ class KurobbsClient:
             raise KurobbsClientException("未获取到角色信息")
         return res.data
 
-    def checkin(self) -> Response:
-        game_list = self.get_user_game_list(3)
+    # =======================
+    # 游戏签到（鸣潮 / 战双）
+    # =======================
+
+    def checkin(self, game_id: int) -> Response:
+        game_list = self.get_user_game_list(game_id)
 
         beijing_time = datetime.now(ZoneInfo("Asia/Shanghai"))
         data = {
-            "gameId": game_list[0].get("gameId", 2),
+            "gameId": game_list[0].get("gameId", game_id),
             "serverId": game_list[0].get("serverId"),
             "roleId": game_list[0].get("roleId"),
             "userId": game_list[0].get("userId"),
@@ -83,10 +87,24 @@ class KurobbsClient:
         }
         return self.make_request(self.SIGN_URL, data)
 
+    # =======================
+    # 论坛签到
+    # =======================
+
     def sign_in(self) -> Response:
         return self.make_request(self.USER_SIGN_URL, {"gameId": 2})
 
-    def _handle_action(self, name: str, func: Callable[[], Response], ok: str, fail: str):
+    # =======================
+    # 通用执行封装
+    # =======================
+
+    def _handle_action(
+        self,
+        name: str,
+        func: Callable[[], Response],
+        ok: str,
+        fail: str,
+    ):
         try:
             res = func()
             if res.success:
@@ -96,9 +114,34 @@ class KurobbsClient:
         except Exception as e:
             self.exceptions.append(f"{fail}：{e}")
 
+    # =======================
+    # 执行入口
+    # =======================
+
     def start(self):
-        self._handle_action("checkin", self.checkin, "签到奖励成功", "签到奖励失败")
-        self._handle_action("sign", self.sign_in, "社区签到成功", "社区签到失败")
+        # 鸣潮签到（gameId = 3）
+        self._handle_action(
+            "鸣潮签到",
+            lambda: self.checkin(3),
+            "鸣潮签到成功",
+            "鸣潮签到失败",
+        )
+
+        # 战双签到（gameId = 2）✅ 新增
+        self._handle_action(
+            "战双签到",
+            lambda: self.checkin(2),
+            "战双签到成功",
+            "战双签到失败",
+        )
+
+        # 论坛签到
+        self._handle_action(
+            "社区签到",
+            self.sign_in,
+            "社区签到成功",
+            "社区签到失败",
+        )
 
     @property
     def summary(self) -> str:
@@ -157,7 +200,7 @@ def main():
     all_msgs = []
     has_error = False
 
-    for idx, (name, token) in enumerate(accounts, start=1):
+    for name, token in accounts:
         logger.info(f"▶ 处理 {name}")
         try:
             client = KurobbsClient(token, name)
