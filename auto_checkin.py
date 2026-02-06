@@ -1,231 +1,222 @@
 import os
 import sys
-import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
-from enum import Enum
-from dataclasses import dataclass
 
 import requests
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ext_notification import send_notification
 
 
 # =======================
-# 工具：Header 安全清洗（核心修复）
-# =======================
-
-def safe_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
-    clean = {}
-    for k, v in headers.items():
-        if isinstance(v, str):
-            clean[k] = v.encode("latin-1", "ignore").decode("latin-1")
-        else:
-            clean[k] = v
-    return clean
-
-
-def post(url, headers=None, data=None, timeout=10):
-    time.sleep(0.6)
-    return requests.post(
-        url,
-        headers=safe_headers(headers or {}),
-        data=data,
-        timeout=timeout
-    )
-
-
-# =======================
-# 枚举 & 常量
-# =======================
-
-class GameType(Enum):
-    PGR = "2"
-    WUWA = "3"
-
-    @property
-    def name_zh(self):
-        return {"2": "战双", "3": "鸣潮"}[self.value]
-
-
-IGNORE_FAIL_MSG = ("请勿重复签到", "已签到", "未绑定角色")
-
-
-# =======================
-# API
-# =======================
-
-@dataclass
-class API:
-    ROLE_LIST: str = "https://api.kurobbs.com/user/role/findRoleList"
-    GAME_SIGN: str = "https://api.kurobbs.com/encourage/signIn/v2"
-    USER_SIGN: str = "https://api.kurobbs.com/user/signIn"
-
-    FORUM_LIST: str = "https://api.kurobbs.com/forum/list"
-    POST_DETAIL: str = "https://api.kurobbs.com/forum/getPostDetail"
-    POST_LIKE: str = "https://api.kurobbs.com/forum/like"
-    TASK_SHARE: str = "https://api.kurobbs.com/encourage/level/shareTask"
-
-
-API = API()
-
-
-# =======================
-# Headers（只放 ASCII）
-# =======================
-
-GAME_HEADERS = {
-    "osversion": "Android",
-    "countrycode": "CN",
-    "model": "2211133C",
-    "source": "android",
-    "lang": "zh-Hans",
-    "version": "1.0.9",
-    "versioncode": "1090",
-    "content-type": "application/x-www-form-urlencoded",
-    "user-agent": "okhttp/3.10.0",
-}
-
-BBS_HEADERS = {
-    "source": "ios",
-    "lang": "zh-Hans",
-    "channel": "appstore",
-    "version": "2.2.0",
-    "model": "iPhone15,2",
-    "content-type": "application/x-www-form-urlencoded; charset=utf-8",
-    "user-agent": "KuroGameBox/48",
-}
-
-
-# =======================
-# Response
+# 数据模型
 # =======================
 
 class Response(BaseModel):
-    code: int
-    msg: str
-    success: Optional[bool] = True
-    data: Optional[Any] = None
+    code: int = Field(..., alias="code")
+    msg: str = Field(..., alias="msg")
+    success: Optional[bool] = Field(None, alias="success")
+    data: Optional[Any] = Field(None, alias="data")
 
 
 # =======================
-# Client
+# 异常
+# =======================
+
+class KurobbsClientException(Exception):
+    pass
+
+
+# =======================
+# 客户端
 # =======================
 
 class KurobbsClient:
-    def __init__(self, token: str, name: str):
+    FIND_ROLE_LIST_API_URL = "https://api.kurobbs.com/user/role/findRoleList"
+    SIGN_URL = "https://api.kurobbs.com/encourage/signIn/v2"
+    USER_SIGN_URL = "https://api.kurobbs.com/user/signIn"
+
+    def __init__(self, token: str, name: str = ""):
         self.token = token
         self.name = name
-        self.result: List[str] = []
-        self.errors: List[str] = []
+        self.result: Dict[str, str] = {}
+        self.exceptions: List[str] = []
 
-    def _headers(self, bbs=False):
-        h = BBS_HEADERS.copy() if bbs else GAME_HEADERS.copy()
-        h["token"] = self.token
-        return h
-
-    def request(self, url, data=None, bbs=False) -> Response:
-        r = post(url, headers=self._headers(bbs), data=data)
-        return Response(**r.json())
-
-    # ---------- 游戏签到 ----------
-
-    def get_roles(self, game_id: str):
-        res = self.request(API.ROLE_LIST, {"gameId": game_id})
-        return res.data or []
-
-    def game_sign(self, game: GameType):
-        roles = self.get_roles(game.value)
-        if not roles:
-            return Response(code=0, msg="未绑定角色", success=True)
-
-        role = roles[0]
-        data = {
-            "gameId": game.value,
-            "serverId": role["serverId"],
-            "roleId": role["roleId"],
-            "userId": role["userId"],
-            "reqMonth": f"{datetime.now(ZoneInfo('Asia/Shanghai')).month:02d}",
+    def get_headers(self) -> Dict[str, str]:
+        return {
+            "osversion": "Android",
+            "devcode": "2fba3859fe9bfe9099f2696b8648c2c6",
+            "countrycode": "CN",
+            "model": "2211133C",
+            "source": "android",
+            "lang": "zh-Hans",
+            "version": "1.0.9",
+            "versioncode": "1090",
+            "token": self.token,
+            "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+            "user-agent": "okhttp/3.10.0",
         }
-        return self.request(API.GAME_SIGN, data)
 
-    def user_sign(self):
-        return self.request(API.USER_SIGN, {"gameId": 2})
+    def make_request(self, url: str, data: Dict[str, Any]) -> Response:
+        resp = requests.post(url, headers=self.get_headers(), data=data, timeout=10)
+        return Response.model_validate_json(resp.content)
 
-    # ---------- 论坛任务 ----------
+    def get_user_game_list(self, game_id: int):
+        res = self.make_request(self.FIND_ROLE_LIST_API_URL, {"gameId": game_id})
+        if not res.data:
+            raise KurobbsClientException("未获取到角色信息")
+        return res.data
 
-    def forum_posts(self, game: GameType, size=10):
-        res = self.request(API.FORUM_LIST, {
-            "gameId": game.value,
-            "pageNum": 1,
-            "pageSize": size,
-        }, bbs=True)
-        return (res.data or {}).get("list", [])
+    # =======================
+    # 游戏签到（鸣潮 / 战双）
+    # =======================
 
-    def view_posts(self, game: GameType, count=3):
-        for post in self.forum_posts(game)[:count]:
-            self.request(API.POST_DETAIL, {"postId": post["postId"]}, bbs=True)
+    def checkin(self, game_id: int) -> Response:
+        game_list = self.get_user_game_list(game_id)
 
-    def like_posts(self, game: GameType, count=5):
-        for post in self.forum_posts(game)[:count]:
-            self.request(API.POST_LIKE, {"postId": post["postId"], "type": 1}, bbs=True)
+        beijing_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        data = {
+            "gameId": game_list[0].get("gameId", game_id),
+            "serverId": game_list[0].get("serverId"),
+            "roleId": game_list[0].get("roleId"),
+            "userId": game_list[0].get("userId"),
+            "reqMonth": f"{beijing_time.month:02d}",
+        }
+        return self.make_request(self.SIGN_URL, data)
 
-    def share_task(self):
-        return self.request(API.TASK_SHARE, {}, bbs=True)
+    # =======================
+    # 论坛签到
+    # =======================
 
-    # ---------- 执行封装 ----------
+    def sign_in(self) -> Response:
+        return self.make_request(self.USER_SIGN_URL, {"gameId": 2})
 
-    def run(self, name: str, func: Callable[[], Optional[Response]]):
+    # =======================
+    # 通用执行封装
+    # =======================
+
+    def _handle_action(
+        self,
+        name: str,
+        func: Callable[[], Response],
+        ok: str,
+        fail: str,
+    ):
         try:
             res = func()
-            if not res or res.success or any(k in res.msg for k in IGNORE_FAIL_MSG):
-                self.result.append(f"{name}完成")
+            if res.success:
+                self.result[name] = ok
             else:
-                self.errors.append(f"{name}失败：{res.msg}")
+                self.exceptions.append(f"{fail}：{res.msg}")
         except Exception as e:
-            self.errors.append(f"{name}异常：{e}")
+            self.exceptions.append(f"{fail}：{e}")
+
+    # =======================
+    # 执行入口
+    # =======================
 
     def start(self):
-        self.run("鸣潮签到", lambda: self.game_sign(GameType.WUWA))
-        self.run("战双签到", lambda: self.game_sign(GameType.PGR))
-        self.run("社区签到", self.user_sign)
+        # 鸣潮签到（gameId = 3）
+        self._handle_action(
+            "鸣潮签到",
+            lambda: self.checkin(3),
+            "鸣潮签到成功",
+            "鸣潮签到失败",
+        )
 
-        self.run("浏览任务", lambda: self.view_posts(GameType.WUWA))
-        self.run("点赞任务", lambda: self.like_posts(GameType.WUWA))
-        self.run("分享任务", self.share_task)
+        # 战双签到（gameId = 2）✅ 新增
+        self._handle_action(
+            "战双签到",
+            lambda: self.checkin(2),
+            "战双签到成功",
+            "战双签到失败",
+        )
+
+        # 论坛签到
+        self._handle_action(
+            "社区签到",
+            self.sign_in,
+            "社区签到成功",
+            "社区签到失败",
+        )
 
     @property
-    def summary(self):
-        msg = f"{self.name}："
-        msg += "，".join(self.result)
-        if self.errors:
-            msg += "\n❌ " + "；".join(self.errors)
-        return msg
+    def summary(self) -> str:
+        prefix = f"{self.name}：" if self.name else ""
+        if self.exceptions:
+            return prefix + "；".join(self.exceptions)
+        return prefix + "，".join(self.result.values())
 
 
 # =======================
-# Main（GitHub Actions 友好）
+# 日志
+# =======================
+
+def configure_logger(debug=False):
+    logger.remove()
+    logger.add(sys.stdout, level="DEBUG" if debug else "INFO")
+
+
+# =======================
+# Token 解析
+# =======================
+
+def parse_tokens(raw: str):
+    """
+    TOKEN=昵称:token,token,昵称2:token
+    """
+    result = []
+    for idx, item in enumerate(raw.split(","), start=1):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, token = item.split(":", 1)
+        else:
+            name, token = f"账号{idx}", item
+        result.append((name.strip(), token.strip()))
+    return result
+
+
+# =======================
+# 主入口
 # =======================
 
 def main():
-    raw = os.getenv("TOKEN")
-    if not raw:
-        sys.exit("未设置 TOKEN")
+    raw_tokens = os.getenv("TOKEN")
+    debug = os.getenv("DEBUG", False)
 
-    all_msg = []
+    configure_logger(debug)
 
-    for i, token in enumerate(raw.split(","), 1):
-        name = f"账号{i}"
+    if not raw_tokens:
+        logger.error("未设置 TOKEN")
+        sys.exit(1)
+
+    accounts = parse_tokens(raw_tokens)
+
+    all_msgs = []
+    has_error = False
+
+    for name, token in accounts:
         logger.info(f"▶ 处理 {name}")
-        c = KurobbsClient(token.strip(), name)
-        c.start()
-        all_msg.append(c.summary)
+        try:
+            client = KurobbsClient(token, name)
+            client.start()
+            all_msgs.append(client.summary)
+            if "失败" in client.summary:
+                has_error = True
+        except Exception as e:
+            has_error = True
+            all_msgs.append(f"{name}：异常 {e}")
 
-    send_notification("\n\n".join(all_msg))
-    sys.exit(0)   # ✅ 不因“已签到”失败
+    final_msg = "\n".join(all_msgs)
+    send_notification(final_msg)
+
+    if has_error:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
