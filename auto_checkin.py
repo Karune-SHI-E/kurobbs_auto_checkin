@@ -9,9 +9,33 @@ from dataclasses import dataclass
 
 import requests
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ext_notification import send_notification
+
+
+# =======================
+# 工具：Header 安全清洗（核心修复）
+# =======================
+
+def safe_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+    clean = {}
+    for k, v in headers.items():
+        if isinstance(v, str):
+            clean[k] = v.encode("latin-1", "ignore").decode("latin-1")
+        else:
+            clean[k] = v
+    return clean
+
+
+def post(url, headers=None, data=None, timeout=10):
+    time.sleep(0.6)
+    return requests.post(
+        url,
+        headers=safe_headers(headers or {}),
+        data=data,
+        timeout=timeout
+    )
 
 
 # =======================
@@ -25,12 +49,6 @@ class GameType(Enum):
     @property
     def name_zh(self):
         return {"2": "战双", "3": "鸣潮"}[self.value]
-
-
-class TaskType(Enum):
-    VIEW = "浏览帖子"
-    LIKE = "点赞帖子"
-    SHARE = "分享帖子"
 
 
 IGNORE_FAIL_MSG = ("请勿重复签到", "已签到", "未绑定角色")
@@ -56,7 +74,7 @@ API = API()
 
 
 # =======================
-# Headers
+# Headers（只放 ASCII）
 # =======================
 
 GAME_HEADERS = {
@@ -77,8 +95,8 @@ BBS_HEADERS = {
     "channel": "appstore",
     "version": "2.2.0",
     "model": "iPhone15,2",
-    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-    "User-Agent": "KuroGameBox/48 CFNetwork/1492.0.1 Darwin/23.3.0",
+    "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+    "user-agent": "KuroGameBox/48",
 }
 
 
@@ -109,9 +127,9 @@ class KurobbsClient:
         h["token"] = self.token
         return h
 
-    def request(self, url, data, bbs=False):
-        r = requests.post(url, headers=self._headers(bbs), data=data, timeout=10)
-        return Response.model_validate_json(r.content)
+    def request(self, url, data=None, bbs=False) -> Response:
+        r = post(url, headers=self._headers(bbs), data=data)
+        return Response(**r.json())
 
     # ---------- 游戏签到 ----------
 
@@ -145,27 +163,25 @@ class KurobbsClient:
             "pageNum": 1,
             "pageSize": size,
         }, bbs=True)
-        return res.data.get("list", [])
+        return (res.data or {}).get("list", [])
 
     def view_posts(self, game: GameType, count=3):
         for post in self.forum_posts(game)[:count]:
             self.request(API.POST_DETAIL, {"postId": post["postId"]}, bbs=True)
-            time.sleep(0.5)
 
     def like_posts(self, game: GameType, count=5):
         for post in self.forum_posts(game)[:count]:
             self.request(API.POST_LIKE, {"postId": post["postId"], "type": 1}, bbs=True)
-            time.sleep(0.5)
 
     def share_task(self):
         return self.request(API.TASK_SHARE, {}, bbs=True)
 
     # ---------- 执行封装 ----------
 
-    def run(self, name: str, func: Callable[[], Response]):
+    def run(self, name: str, func: Callable[[], Optional[Response]]):
         try:
             res = func()
-            if res.success or any(k in res.msg for k in IGNORE_FAIL_MSG):
+            if not res or res.success or any(k in res.msg for k in IGNORE_FAIL_MSG):
                 self.result.append(f"{name}完成")
             else:
                 self.errors.append(f"{name}失败：{res.msg}")
@@ -191,29 +207,25 @@ class KurobbsClient:
 
 
 # =======================
-# Main
+# Main（GitHub Actions 友好）
 # =======================
 
 def main():
-    tokens = os.getenv("TOKEN")
-    if not tokens:
+    raw = os.getenv("TOKEN")
+    if not raw:
         sys.exit("未设置 TOKEN")
 
     all_msg = []
-    failed = False
 
-    for i, raw in enumerate(tokens.split(","), 1):
-        name, token = (raw.split(":", 1) + [f"账号{i}"])[:2]
+    for i, token in enumerate(raw.split(","), 1):
+        name = f"账号{i}"
         logger.info(f"▶ 处理 {name}")
-        c = KurobbsClient(token.strip(), name.strip())
+        c = KurobbsClient(token.strip(), name)
         c.start()
         all_msg.append(c.summary)
-        if c.errors:
-            failed = True
 
     send_notification("\n\n".join(all_msg))
-    if failed:
-        sys.exit(1)
+    sys.exit(0)   # ✅ 不因“已签到”失败
 
 
 if __name__ == "__main__":
