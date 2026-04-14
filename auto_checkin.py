@@ -8,6 +8,7 @@ import requests
 from loguru import logger
 from pydantic import BaseModel, Field
 
+# 导入上面的自定义推送模块
 from ext_notification import send_notification
 
 
@@ -66,8 +67,9 @@ class KurobbsClient:
 
     def get_user_game_list(self, game_id: int):
         res = self.make_request(self.FIND_ROLE_LIST_API_URL, {"gameId": game_id})
-        if not res.data:
-            raise KurobbsClientException("未获取到角色信息")
+        # 【修复】防止 data 为空、非列表或空列表导致的越界异常
+        if not res.data or not isinstance(res.data, list) or len(res.data) == 0:
+            raise KurobbsClientException(f"未获取到角色信息 (GameID: {game_id})")
         return res.data
 
     # =======================
@@ -107,12 +109,18 @@ class KurobbsClient:
     ):
         try:
             res = func()
-            if res.success:
+            # 【修复】增加 code 判断，应对接口不返回 success: true 的情况，假设 200 为成功
+            if res.success or res.code == 200:
                 self.result[name] = ok
+                logger.info(f"[{self.name}] {ok}")
             else:
-                self.exceptions.append(f"{fail}：{res.msg}")
+                error_msg = f"{fail}：{res.msg} (Code: {res.code})"
+                self.exceptions.append(error_msg)
+                logger.warning(f"[{self.name}] {error_msg}")
         except Exception as e:
-            self.exceptions.append(f"{fail}：{e}")
+            error_msg = f"{fail}：{str(e)}"
+            self.exceptions.append(error_msg)
+            logger.error(f"[{self.name}] {error_msg}")
 
     # =======================
     # 执行入口
@@ -127,7 +135,7 @@ class KurobbsClient:
             "鸣潮签到失败",
         )
 
-        # 战双签到（gameId = 2）✅ 新增
+        # 战双签到（gameId = 2）
         self._handle_action(
             "战双签到",
             lambda: self.checkin(2),
@@ -145,10 +153,12 @@ class KurobbsClient:
 
     @property
     def summary(self) -> str:
+        # 【修复】将成功和失败的信息合并输出，不再掩盖成功结果
         prefix = f"{self.name}：" if self.name else ""
-        if self.exceptions:
-            return prefix + "；".join(self.exceptions)
-        return prefix + "，".join(self.result.values())
+        msgs = list(self.result.values()) + self.exceptions
+        if msgs:
+            return prefix + "，".join(msgs)
+        return prefix + "无执行结果"
 
 
 # =======================
@@ -187,12 +197,12 @@ def parse_tokens(raw: str):
 
 def main():
     raw_tokens = os.getenv("TOKEN")
-    debug = os.getenv("DEBUG", False)
+    debug = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
 
     configure_logger(debug)
 
     if not raw_tokens:
-        logger.error("未设置 TOKEN")
+        logger.error("未设置 TOKEN 环境变量")
         sys.exit(1)
 
     accounts = parse_tokens(raw_tokens)
@@ -201,18 +211,21 @@ def main():
     has_error = False
 
     for name, token in accounts:
-        logger.info(f"▶ 处理 {name}")
+        logger.info(f"▶ 开始处理: {name}")
         try:
             client = KurobbsClient(token, name)
             client.start()
             all_msgs.append(client.summary)
-            if "失败" in client.summary:
+            if client.exceptions: # 【优化】通过 client.exceptions 判断该账号是否出错更准确
                 has_error = True
         except Exception as e:
             has_error = True
-            all_msgs.append(f"{name}：异常 {e}")
+            error_msg = f"{name}：执行异常 {e}"
+            all_msgs.append(error_msg)
+            logger.exception(f"处理 {name} 时发生严重异常")
 
     final_msg = "\n".join(all_msgs)
+    logger.info("所有账号处理完毕，准备发送通知。")
     send_notification(final_msg)
 
     if has_error:
